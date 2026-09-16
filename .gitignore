@@ -1,0 +1,21 @@
+# Unity generated files
+[Ll]ibrary/
+[Tt]emp/
+[Ll]ogs/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+UserSettings/
+*.csproj
+*.sln
+
+# Node generated files and local configuration
+node_modules/
+npm-debug.log*
+.env
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

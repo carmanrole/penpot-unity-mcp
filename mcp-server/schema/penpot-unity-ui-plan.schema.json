@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/untilspring/penpot-unity-ui-mcp/schema/penpot-unity-ui-plan.schema.json",
+  "title": "Penpot Unity UI Plan",
+  "type": "object",
+  "required": ["schemaVersion", "source", "target", "nodes"],
+  "properties": {
+    "schemaVersion": { "enum": [1, 2] },
+    "source": {
+      "type": "object",
+      "required": ["fileId", "pageId", "frameId", "frameName"],
+      "properties": {
+        "fileId": { "type": "string" },
+        "pageId": { "type": "string" },
+        "frameId": { "type": "string" },
+        "frameName": { "type": "string" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["prefabPath", "referenceResolution", "coordinateSystem"],
+      "properties": {
+        "prefabPath": { "type": "string", "pattern": "^Assets/.+\\.prefab$" },
+        "referenceResolution": {
+          "type": "object",
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "number", "exclusiveMinimum": 0 },
+            "height": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "coordinateSystem": { "enum": ["penpot-top-left-to-unity-centered", "penpot-top-left-to-unity-responsive"] }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["sourceId", "name", "kind", "rect"],
+      "properties": {
+        "sourceId": { "type": "string" },
+        "parentSourceId": { "type": ["string", "null"] },
+        "name": { "type": "string" },
+        "kind": { "enum": ["container", "image", "text", "vector"] },
+        "rect": {
+          "type": "object",
+          "required": ["anchorMin", "anchorMax", "pivot", "anchoredPosition", "sizeDelta"],
+          "properties": {
+            "anchorMin": { "$ref": "#/$defs/vector2" },
+            "anchorMax": { "$ref": "#/$defs/vector2" },
+            "pivot": { "$ref": "#/$defs/vector2" },
+            "anchoredPosition": { "$ref": "#/$defs/vector2" },
+            "sizeDelta": { "$ref": "#/$defs/vector2" }
+          }
+        },
+        "style": { "type": "object" },
+        "text": { "type": "object" },
+        "layout": { "type": "object" },
+        "constraints": { "type": "object" },
+        "component": { "type": "object" },
+        "autoLayout": { "type": "object" },
+        "accessibility": { "type": "object" },
+        "asset": {
+          "type": "object",
+          "properties": {
+            "fileName": { "type": "string" },
+            "reason": { "type": "string" },
+            "imageType": { "enum": ["simple", "sliced"] }
+          }
+        }
+      }
+    },
+    "vector2": {
+      "type": "object",
+      "required": ["x", "y"],
+      "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
+    }
+  }
+}

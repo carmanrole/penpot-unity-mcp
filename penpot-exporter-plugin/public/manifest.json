@@ -1,0 +1,7 @@
+{
+  "name": "Penpot Unity UI Exporter",
+  "description": "Exports the current Penpot file as a Unity UI generation specification.",
+  "version": 2,
+  "code": "plugin.js",
+  "permissions": ["content:read", "allow:downloads"]
+}

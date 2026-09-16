@@ -1,0 +1,9 @@
+# Add this to ~/.codex/config.toml.
+# Replace <absolute-path-to-repository> with the cloned repository path.
+
+[mcp_servers.penpot_unity_ui]
+command = "node"
+args = ["<absolute-path-to-repository>/mcp-server/src/index.mjs"]
+
+[mcp_servers.penpot_unity_ui.env]
+PENPOT_UNITY_UI_BRIDGE_URL = "http://127.0.0.1:8091"

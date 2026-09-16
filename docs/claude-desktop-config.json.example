@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "penpot-unity-ui": {
+      "command": "node",
+      "args": [
+        "<absolute-path-to-repository>/mcp-server/src/index.mjs"
+      ],
+      "env": {
+        "PENPOT_UNITY_UI_BRIDGE_URL": "http://127.0.0.1:8091"
+      }
+    }
+  }
+}

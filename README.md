@@ -1,40 +1,68 @@
 # Penpot Unity UI MCP
 
-Generate Unity uGUI prefabs from Penpot UI exports through MCP.
+Generate production-ready Unity uGUI prefabs directly from Penpot layouts through the Model Context Protocol (MCP).
 
-## Packages
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Unity](https://img.shields.io/badge/Unity-2022.3%2B-black.svg)](https://unity.com/)
+
+---
+
+## Overview
+
+`penpot-unity-mcp` connects your Penpot workspace and Unity Editor through AI-assisted MCP tools. It eliminates manual asset slicing and UI coordinate recreation by synchronizing designs into native Unity UI hierarchies in a single automated step.
+
+### Key Features
+
+- **Direct MCP Sync (`penpot_sync_selected_layout`)**: Synchronizes the active Penpot selection directly into a Unity Prefab without downloading JSON or copying files manually.
+- **Native uGUI Hierarchy**: Builds genuine Unity UI elements (`RectTransform`, `TextMeshProUGUI`, `Image`, `Button`, `RectMask2D`).
+- **9-Slice (Sliced Sprite) Support**: Detects `borderRadius` from Penpot shapes, configures `TextureImporter.spriteBorder` in Unity, and sets `Image.Type.Sliced` to keep rounded corners crisp and undistorted at any aspect ratio.
+- **AutoLayout & LayoutElement Integration**: Maps Penpot flex layouts (`row`, `column`, `gap`, `padding`, alignment) to `HorizontalLayoutGroup` and `VerticalLayoutGroup`, automatically configuring `LayoutElement` (`preferredWidth`, `preferredHeight`) on child items to prevent coordinate and scaling conflicts.
+- **Selective Raster Fallback**: Exports PNG assets only for complex visual layers (gradients, strokes, SVGs, or custom shapes) while hiding nested children to keep container backgrounds pure.
+- **Idempotent Updates**: Uses Penpot Source IDs to update existing prefabs non-destructively.
+
+---
+
+## Architecture
 
 | Directory | Distribution | Purpose |
 | --- | --- | --- |
-| `unity-package` | Unity Package Manager | Local Unity Editor bridge on port `8091` |
-| `mcp-server` | npm | Stdio MCP server for Codex and other MCP clients |
-| `penpot-exporter-plugin` | Penpot local plugin | Downloads Penpot JSON and deduplicated PNG assets |
+| `unity-package` | Unity Package Manager | Local Unity Editor bridge running on port `8091` |
+| `mcp-server` | npm / Node.js | Stdio MCP server for Claude Desktop, Codex, Cursor, and Antigravity |
 
-## Install
+---
 
-### Unity
+## Installation
 
-Install the `unity-package` directory through Unity Package Manager using a local path or a Git URL with `?path=unity-package`.
+### 1. Unity Editor Bridge
+
+Install `unity-package` via Unity Package Manager using a Git URL:
 
 ```text
 https://github.com/ImHooya/penpot-unity-mcp.git?path=unity-package
 ```
 
-Open **Tools > Penpot Unity UI MCP** and select **Connect**.
+Or add it locally from disk (`Add package from disk...` -> select `unity-package/package.json`).
 
-### MCP server
+After installation, open the bridge window in Unity:
+> **Tools > Penpot Unity UI MCP** and click **Connect**.
+
+### 2. MCP Server Setup
+
+Clone or install the MCP server dependencies:
 
 ```bash
 cd mcp-server
 npm install
 ```
 
+Register the server in your MCP client configuration (e.g., `claude_desktop_config.json`, Cursor, or Antigravity):
+
 ```json
 {
   "mcpServers": {
     "penpot-unity-ui": {
       "command": "node",
-      "args": ["/absolute/path/to/mcp-server/src/index.mjs"],
+      "args": ["/absolute/path/to/penpot-unity-mcp/mcp-server/src/index.mjs"],
       "env": {
         "PENPOT_UNITY_UI_BRIDGE_URL": "http://127.0.0.1:8091"
       }
@@ -43,26 +71,37 @@ npm install
 }
 ```
 
-### Penpot plugin
+### 3. Penpot Connection
 
-```bash
-cd penpot-exporter-plugin
-npm install
-npm run build
-npx serve public -l 4400
-```
+Ensure your Penpot workspace is connected via the official Penpot MCP server. `penpot-unity-mcp` connects to Penpot's MCP interface to inspect selections and export assets seamlessly.
 
-Install `http://localhost:4400/manifest.json` in Penpot Plugin Manager.
+---
+
+## Quick Start
+
+1. Open your UI board in Penpot and select the frame or board you want to export.
+2. In your MCP-enabled AI client (Claude, Cursor, Codex, etc.), invoke:
+   ```text
+   penpot_sync_selected_layout(
+     prefabPath: "Assets/PenpotUI/Prefabs/MyScreen.prefab"
+   )
+   ```
+3. The MCP server will:
+   - Read the selected layout hierarchy from Penpot.
+   - Export any necessary 9-slice or complex visual PNG assets.
+   - Import textures into Unity with optimal sprite and border settings.
+   - Build or update the Prefab with responsive anchors, text styles, and layout groups.
+
+---
 
 ## Documentation
 
-- [Full guide](docs/GUIDE.md)
-- [한국어 가이드](docs/GUIDE.ko.md)
-- [Codex and Claude Desktop setup](docs/MCP_CLIENT_SETUP.md)
-- [Storage Box sample](samples/StorageBox)
+- [User Guide](docs/GUIDE.md)
+- [MCP Client Setup Guide](docs/MCP_CLIENT_SETUP.md)
+- [Changelog](CHANGELOG.md)
 
-The exporter preserves Penpot Component and Variant metadata, converts responsive constraints into Unity RectTransform values, maps Auto Layout to Unity Layout Groups, stores accessibility metadata, supports idempotent source-ID updates, and emits PNG assets only for complex visual layers that require raster fallback.
+---
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT License. See [LICENSE](LICENSE) for details.

@@ -1,12 +1,17 @@
 {
   "name": "penpot-unity-ui-mcp",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "MCP server for converting Penpot UI specifications into Unity UI prefabs.",
   "type": "module",
   "bin": {
     "penpot-unity-ui-mcp": "src/index.mjs"
   },
-  "files": ["src", "schema", "README.md", ".env.example"],
+  "files": [
+    "src",
+    "schema",
+    "README.md",
+    ".env.example"
+  ],
   "engines": {
     "node": ">=20"
   },

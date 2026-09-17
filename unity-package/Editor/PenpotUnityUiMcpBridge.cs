@@ -41,6 +41,7 @@ namespace PenpotUnityUiMcp
             unitySynchronizationContext = SynchronizationContext.Current;
             EditorApplication.update -= ProcessEditorRequests;
             EditorApplication.update += ProcessEditorRequests;
+            EditorApplication.delayCall += () => StartBridge();
         }
 
         [Serializable] private class Response { public string status; public string message; }
@@ -72,12 +73,15 @@ namespace PenpotUnityUiMcp
             public string accessibilityLabel; public string accessibilityDescription;
             public string layoutType; public float layoutSpacing; public float paddingLeft; public float paddingRight; public float paddingTop; public float paddingBottom;
             public string childAlignment; public bool childForceExpandWidth; public bool childForceExpandHeight;
+            public bool childControlWidth = true; public bool childControlHeight = true;
+            public string spriteAssetPath; public string imageType = "simple"; public float borderRadius; public bool preserveAspect; public bool addRectMask; public bool hasVisualFill = true;
         }
         [Serializable] private class PlanResponse { public string status; public string message; public int applied; }
         [Serializable] private class AssetSearchRequest { public string query; public string assetType; }
         [Serializable] private class AssetSearchResponse { public string status; public string[] assetPaths; }
         [Serializable] private class SpriteImportRequest { public string assetPath; public float pixelsPerUnit = 100f; }
         [Serializable] private class AssetCopyRequest { public string sourceFilePath; public string destinationAssetPath; public bool overwrite; public bool importAsSprite = true; public float pixelsPerUnit = 100f; }
+        [Serializable] private class AssetBatchCopyRequest { public AssetCopyRequest[] assets; }
         [Serializable] private class ConsoleResponse { public string status; public ConsoleEntry[] entries; }
         [Serializable] private class ConsoleEntry { public string condition; public string stackTrace; public string type; }
         [Serializable] private class PrefabTargetRequest { public string prefabPath; public string targetPath; }
@@ -97,9 +101,9 @@ namespace PenpotUnityUiMcp
         [Serializable] private class ValidationRequest { public string prefabPath; public bool checkActiveScene = true; }
         [Serializable] private class ValidationIssue { public string severity; public string code; public string path; public string component; public string message; }
         [Serializable] private class ValidationResponse { public string status; public ValidationIssue[] issues; public int errorCount; public int warningCount; }
-        [Serializable] private class ImageStyleRequest { public string prefabPath; public string targetPath; public string spriteAssetPath; public string materialAssetPath; public string imageType = "simple"; public bool preserveAspect; }
+        [Serializable] private class ImageStyleRequest { public string prefabPath; public string targetPath; public string spriteAssetPath; public string materialAssetPath; public string imageType = "simple"; public float borderRadius; public bool preserveAspect; }
         [Serializable] private class TextStyleRequest { public string prefabPath; public string targetPath; public string text; public string fontAssetPath; public float fontSize = 24f; public string color = "#FFFFFFFF"; public string alignment = "Center"; public bool enableWordWrapping = true; public string overflowMode = "Overflow"; }
-        [Serializable] private class LayoutRequest { public string prefabPath; public string targetPath; public string layoutType; public float spacing; public float paddingLeft; public float paddingRight; public float paddingTop; public float paddingBottom; public int constraintCount = 1; public string childAlignment = "UpperLeft"; public bool childForceExpandWidth; public bool childForceExpandHeight; }
+        [Serializable] private class LayoutRequest { public string prefabPath; public string targetPath; public string layoutType; public float spacing; public float paddingLeft; public float paddingRight; public float paddingTop; public float paddingBottom; public int constraintCount = 1; public string childAlignment = "UpperLeft"; public bool childForceExpandWidth; public bool childForceExpandHeight; public bool childControlWidth = true; public bool childControlHeight = true; }
         [Serializable] private class ControlRequest { public string prefabPath; public string targetPath; public string controlType; public bool addMask; }
         [Serializable] private class SelectableStyleRequest { public string prefabPath; public string targetPath; public string transition = "ColorTint"; public string navigation = "Automatic"; public string normalColor = "#FFFFFFFF"; public string highlightedColor = "#FFFFFFFF"; public string pressedColor = "#C8C8C8FF"; public string disabledColor = "#78787880"; }
 
@@ -122,6 +126,22 @@ namespace PenpotUnityUiMcp
             window.titleContent = new GUIContent("Penpot UI MCP");
             window.minSize = new Vector2(360f, 150f);
             window.Show();
+        }
+
+        [InitializeOnLoadMethod]
+        private static void RegisterLifecycleHooks()
+        {
+            AssemblyReloadEvents.beforeAssemblyReload -= StopBridgeBeforeReload;
+            AssemblyReloadEvents.beforeAssemblyReload += StopBridgeBeforeReload;
+            EditorApplication.quitting -= StopBridgeBeforeReload;
+            EditorApplication.quitting += StopBridgeBeforeReload;
+        }
+
+        private static void StopBridgeBeforeReload()
+        {
+            // A listener thread survives long enough to keep 8091 occupied if an
+            // assembly reload discards the static listener reference first.
+            StopBridge();
         }
 
         private void OnEnable() { EditorApplication.update += Repaint; }
@@ -211,7 +231,7 @@ namespace PenpotUnityUiMcp
             {
                 string route = context.Request.Url.AbsolutePath.TrimEnd('/').ToLowerInvariant();
                 if (context.Request.HttpMethod == "GET" && route == "/health") response = JsonUtility.ToJson(new Response { status = "ok", message = "penpot-unity-ui-bridge" });
-                else if (context.Request.HttpMethod == "GET" && route == "/capabilities") response = JsonUtility.ToJson(new CapabilityResponse { status = "ok", tools = new[] { "get_ui_context", "ensure_scene_ui", "get_prefab_hierarchy", "validate_ui_prefab", "get_compilation_status", "create_ui_prefab", "apply_ui_plan", "delete_ui_element", "set_rect_transform", "add_ui_component", "remove_ui_component", "set_serialized_field", "configure_image", "configure_tmp_text", "configure_layout", "add_ui_control", "configure_selectable", "search_ui_assets", "import_ui_sprite", "copy_ui_asset", "write_ui_file", "run_ui_editor_script", "get_console", "capture_game_view" } });
+                else if (context.Request.HttpMethod == "GET" && route == "/capabilities") response = JsonUtility.ToJson(new CapabilityResponse { status = "ok", tools = new[] { "get_ui_context", "ensure_scene_ui", "get_prefab_hierarchy", "validate_ui_prefab", "get_compilation_status", "create_ui_prefab", "apply_ui_plan", "delete_ui_element", "set_rect_transform", "add_ui_component", "remove_ui_component", "set_serialized_field", "configure_image", "configure_tmp_text", "configure_layout", "add_ui_control", "configure_selectable", "search_ui_assets", "import_ui_sprite", "copy_ui_asset", "copy_ui_assets", "write_ui_file", "run_ui_editor_script", "get_console", "capture_game_view" } });
                 else if (context.Request.HttpMethod == "GET" && route == "/ui/job-status") response = GetJobStatus(context.Request.QueryString["id"]);
                 else response = QueueJob(route, ReadBody(context.Request));
             }
@@ -253,6 +273,7 @@ namespace PenpotUnityUiMcp
                 case "/ui/search-assets": return SearchAssets(JsonUtility.FromJson<AssetSearchRequest>(body));
                 case "/ui/import-sprite": return ImportSprite(JsonUtility.FromJson<SpriteImportRequest>(body));
                 case "/ui/copy-asset": return CopyUiAsset(JsonUtility.FromJson<AssetCopyRequest>(body));
+                case "/ui/copy-assets": return CopyUiAssets(JsonUtility.FromJson<AssetBatchCopyRequest>(body));
                 case "/ui/write-file": return WriteUiFile(JsonUtility.FromJson<FileWriteRequest>(body));
                 case "/ui/run-editor-script": return RunEditorScript(JsonUtility.FromJson<ScriptRunRequest>(body));
                 case "/ui/console": return GetConsole();
@@ -488,11 +509,22 @@ namespace PenpotUnityUiMcp
                     else UpdateUiElement(existing, action);
                     applied++;
                 }
+                CleanMissingScripts(root);
                 PrefabUtility.SaveAsPrefabAsset(root, request.prefabPath);
                 AssetDatabase.SaveAssets();
                 return JsonUtility.ToJson(new PlanResponse { status = "ok", message = "UI plan applied.", applied = applied });
             }
             finally { PrefabUtility.UnloadPrefabContents(root); }
+        }
+
+        private static void CleanMissingScripts(GameObject go)
+        {
+            if (go == null) return;
+            GameObjectUtility.RemoveMonoBehavioursWithMissingScript(go);
+            foreach (Transform child in go.transform)
+            {
+                CleanMissingScripts(child.gameObject);
+            }
         }
 
         private static void CreateUiElement(Transform prefabRoot, UiAction action)
@@ -508,6 +540,7 @@ namespace PenpotUnityUiMcp
             rect.pivot = action.useResponsiveRect ? new Vector2(action.pivotX, action.pivotY) : new Vector2(0.5f, 0.5f);
             rect.anchoredPosition = new Vector2(action.x, action.y);
             rect.sizeDelta = action.useResponsiveRect ? new Vector2(action.width, action.height) : new Vector2(Mathf.Max(1, action.width), Mathf.Max(1, action.height));
+            ApplyParentLayoutElement(element.transform, parent, action);
             Color color;
             if (!ColorUtility.TryParseHtmlString(action.color, out color)) color = Color.white;
 
@@ -518,14 +551,35 @@ namespace PenpotUnityUiMcp
                 text.fontSize = Mathf.Max(1, action.fontSize);
                 text.color = color;
             }
-            else
+            else if (!string.IsNullOrWhiteSpace(action.spriteAssetPath) || (type != "container" && (action.hasVisualFill || type == "button")))
             {
                 var image = element.AddComponent<Image>();
-                image.color = color;
-                if (type == "button") element.AddComponent<Button>();
+                ApplyActionSprite(image, action);
+                if (image.sprite != null || !string.IsNullOrWhiteSpace(action.spriteAssetPath))
+                {
+                    image.color = Color.white;
+                }
+                else if (action.hasVisualFill)
+                {
+                    image.color = color;
+                }
+                else
+                {
+                    image.color = Color.clear;
+                }
+                if (type == "button")
+                {
+                    var btn = element.AddComponent<Button>();
+                    btn.targetGraphic = image;
+                }
             }
             ApplyMetadata(element, action);
+            ApplyMask(element, action);
             ApplyActionLayout(element.GetComponent<RectTransform>(), action);
+            if (string.Equals(action.name, "Background", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(action.parentPath))
+            {
+                element.transform.SetAsFirstSibling();
+            }
         }
 
         private static Transform FindBySourceId(Transform root, string sourceId)
@@ -543,10 +597,106 @@ namespace PenpotUnityUiMcp
             rect.anchorMax = action.useResponsiveRect ? new Vector2(action.anchorMaxX, action.anchorMaxY) : new Vector2(.5f, .5f);
             rect.pivot = action.useResponsiveRect ? new Vector2(action.pivotX, action.pivotY) : new Vector2(.5f, .5f);
             rect.anchoredPosition = new Vector2(action.x, action.y); rect.sizeDelta = action.useResponsiveRect ? new Vector2(action.width, action.height) : new Vector2(Mathf.Max(1, action.width), Mathf.Max(1, action.height));
+            ApplyParentLayoutElement(element, element.parent, action);
             Color color; if (!ColorUtility.TryParseHtmlString(action.color, out color)) color = Color.white;
             var text = element.GetComponent<TextMeshProUGUI>(); if (text != null) { text.text = action.text ?? text.text; text.fontSize = Mathf.Max(1, action.fontSize); text.color = color; }
-            var image = element.GetComponent<Image>(); if (image != null) image.color = color;
-            ApplyMetadata(element.gameObject, action); ApplyActionLayout(rect, action);
+            var image = element.GetComponent<Image>();
+            bool isText = string.Equals(action.elementType, "text", StringComparison.OrdinalIgnoreCase) || element.GetComponent<TextMeshProUGUI>() != null;
+            bool hasSprite = !isText && !string.IsNullOrWhiteSpace(action.spriteAssetPath);
+            bool shouldHaveImage = !isText && (hasSprite || (!string.Equals(action.elementType, "container", StringComparison.OrdinalIgnoreCase) && (action.hasVisualFill || string.Equals(action.elementType, "button", StringComparison.OrdinalIgnoreCase))));
+
+            if (!shouldHaveImage)
+            {
+                if (image != null && image.sprite == null && !hasSprite) DestroyImmediate(image);
+            }
+            else
+            {
+                image = image ?? element.gameObject.AddComponent<Image>();
+                ApplyActionSprite(image, action);
+                if (image != null)
+                {
+                    if (image.sprite != null || hasSprite)
+                    {
+                        image.color = Color.white;
+                    }
+                    else if (action.hasVisualFill)
+                    {
+                        image.color = color;
+                    }
+                    else
+                    {
+                        image.color = Color.clear;
+                    }
+                }
+                if (string.Equals(action.elementType, "button", StringComparison.OrdinalIgnoreCase))
+                {
+                    var btn = GetOrAddComponent<Button>(element.gameObject);
+                    if (image != null) btn.targetGraphic = image;
+                }
+            }
+            ApplyMetadata(element.gameObject, action); ApplyMask(element.gameObject, action); ApplyActionLayout(rect, action);
+            if (string.Equals(action.name, "Background", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(action.parentPath))
+            {
+                element.SetAsFirstSibling();
+            }
+        }
+
+        private static void ApplyParentLayoutElement(Transform element, Transform parent, UiAction action)
+        {
+            if (element == null || parent == null) return;
+            var parentLayout = parent.GetComponent<LayoutGroup>();
+            if (parentLayout != null)
+            {
+                var le = element.GetComponent<LayoutElement>() ?? element.gameObject.AddComponent<LayoutElement>();
+                if (action.width > 0)
+                {
+                    le.preferredWidth = action.width;
+                    le.minWidth = action.width;
+                }
+                if (action.height > 0)
+                {
+                    le.preferredHeight = action.height;
+                    le.minHeight = action.height;
+                }
+            }
+        }
+
+        private static void ApplyMask(GameObject element, UiAction action)
+        {
+            var mask = element.GetComponent<RectMask2D>();
+            if (action.addRectMask) { if (mask == null) element.AddComponent<RectMask2D>(); }
+            else if (mask != null) DestroyImmediate(mask);
+        }
+
+        private static void ApplyActionSprite(Image image, UiAction action)
+        {
+            if (image == null) return;
+            if (string.IsNullOrWhiteSpace(action.spriteAssetPath))
+            {
+                image.sprite = null;
+                image.type = Image.Type.Simple;
+                image.preserveAspect = false;
+                return;
+            }
+            if (action.borderRadius > 0)
+            {
+                var importer = AssetImporter.GetAtPath(action.spriteAssetPath) as TextureImporter;
+                if (importer != null)
+                {
+                    float r = action.borderRadius;
+                    Vector4 border = new Vector4(r, r, r, r);
+                    if (importer.spriteBorder != border)
+                    {
+                        importer.spriteBorder = border;
+                        importer.SaveAndReimport();
+                    }
+                }
+            }
+            image.sprite = AssetDatabase.LoadAssetAtPath<Sprite>(action.spriteAssetPath);
+            if (image.sprite == null) throw new InvalidOperationException("Sprite asset was not found: " + action.spriteAssetPath);
+            image.type = (string.Equals(action.imageType, "sliced", StringComparison.OrdinalIgnoreCase) || action.borderRadius > 0) ? Image.Type.Sliced : Image.Type.Simple;
+            image.preserveAspect = action.preserveAspect;
+            image.color = Color.white;
         }
 
         private static void ApplyMetadata(GameObject element, UiAction action)
@@ -559,7 +709,7 @@ namespace PenpotUnityUiMcp
         private static void ApplyActionLayout(RectTransform target, UiAction action)
         {
             if (string.IsNullOrWhiteSpace(action.layoutType)) return;
-            ConfigureLayoutOnTarget(target, action.layoutType, action.layoutSpacing, action.paddingLeft, action.paddingRight, action.paddingTop, action.paddingBottom, action.childAlignment, action.childForceExpandWidth, action.childForceExpandHeight, 1);
+            ConfigureLayoutOnTarget(target, action.layoutType, action.layoutSpacing, action.paddingLeft, action.paddingRight, action.paddingTop, action.paddingBottom, action.childAlignment, action.childForceExpandWidth, action.childForceExpandHeight, 1, action.childControlWidth, action.childControlHeight);
         }
 
         private static string DeleteElement(PrefabTargetRequest request)
@@ -632,6 +782,19 @@ namespace PenpotUnityUiMcp
                 var image = target.GetComponent<Image>() ?? target.gameObject.AddComponent<Image>();
                 if (!string.IsNullOrWhiteSpace(request.spriteAssetPath))
                 {
+                    if (request.borderRadius > 0)
+                    {
+                        var importer = AssetImporter.GetAtPath(request.spriteAssetPath) as TextureImporter;
+                        if (importer != null)
+                        {
+                            Vector4 border = new Vector4(request.borderRadius, request.borderRadius, request.borderRadius, request.borderRadius);
+                            if (importer.spriteBorder != border)
+                            {
+                                importer.spriteBorder = border;
+                                importer.SaveAndReimport();
+                            }
+                        }
+                    }
                     image.sprite = AssetDatabase.LoadAssetAtPath<Sprite>(request.spriteAssetPath);
                     if (image.sprite == null) throw new InvalidOperationException("Sprite asset was not found.");
                 }
@@ -640,8 +803,9 @@ namespace PenpotUnityUiMcp
                     image.material = AssetDatabase.LoadAssetAtPath<Material>(request.materialAssetPath);
                     if (image.material == null) throw new InvalidOperationException("Material asset was not found.");
                 }
-                image.type = string.Equals(request.imageType, "sliced", StringComparison.OrdinalIgnoreCase) ? Image.Type.Sliced : Image.Type.Simple;
+                image.type = (string.Equals(request.imageType, "sliced", StringComparison.OrdinalIgnoreCase) || request.borderRadius > 0) ? Image.Type.Sliced : Image.Type.Simple;
                 image.preserveAspect = request.preserveAspect;
+                if (image.sprite != null) image.color = Color.white;
                 return "Image style configured.";
             });
         }
@@ -674,12 +838,12 @@ namespace PenpotUnityUiMcp
             {
                 var rect = target as RectTransform;
                 if (rect == null) throw new InvalidOperationException("Layout Group target must have a RectTransform.");
-                ConfigureLayoutOnTarget(rect, request.layoutType, request.spacing, request.paddingLeft, request.paddingRight, request.paddingTop, request.paddingBottom, request.childAlignment, request.childForceExpandWidth, request.childForceExpandHeight, request.constraintCount);
+                ConfigureLayoutOnTarget(rect, request.layoutType, request.spacing, request.paddingLeft, request.paddingRight, request.paddingTop, request.paddingBottom, request.childAlignment, request.childForceExpandWidth, request.childForceExpandHeight, request.constraintCount, request.childControlWidth, request.childControlHeight);
                 return "Layout group configured.";
             });
         }
 
-        private static void ConfigureLayoutOnTarget(RectTransform target, string layoutType, float spacing, float paddingLeft, float paddingRight, float paddingTop, float paddingBottom, string childAlignment, bool childForceExpandWidth, bool childForceExpandHeight, int constraintCount)
+        private static void ConfigureLayoutOnTarget(RectTransform target, string layoutType, float spacing, float paddingLeft, float paddingRight, float paddingTop, float paddingBottom, string childAlignment, bool childForceExpandWidth, bool childForceExpandHeight, int constraintCount, bool childControlWidth = true, bool childControlHeight = true)
         {
             LayoutGroup layout;
             switch (layoutType.ToLowerInvariant())
@@ -693,8 +857,34 @@ namespace PenpotUnityUiMcp
             }
             if (Enum.TryParse(childAlignment, true, out TextAnchor alignment)) layout.childAlignment = alignment;
             var linear = layout as HorizontalOrVerticalLayoutGroup;
-            if (linear != null) { linear.spacing = Mathf.Max(0, spacing); linear.childForceExpandWidth = childForceExpandWidth; linear.childForceExpandHeight = childForceExpandHeight; }
+            if (linear != null)
+            {
+                linear.spacing = Mathf.Max(0, spacing);
+                linear.childForceExpandWidth = childForceExpandWidth;
+                linear.childForceExpandHeight = childForceExpandHeight;
+                linear.childControlWidth = childControlWidth;
+                linear.childControlHeight = childControlHeight;
+            }
             layout.padding = new RectOffset(Mathf.RoundToInt(paddingLeft), Mathf.RoundToInt(paddingRight), Mathf.RoundToInt(paddingTop), Mathf.RoundToInt(paddingBottom));
+
+            foreach (Transform child in target)
+            {
+                var childRect = child as RectTransform;
+                if (childRect != null)
+                {
+                    var le = child.GetComponent<LayoutElement>() ?? child.gameObject.AddComponent<LayoutElement>();
+                    if (le.preferredWidth <= 0 && childRect.rect.width > 0)
+                    {
+                        le.preferredWidth = childRect.rect.width;
+                        le.minWidth = childRect.rect.width;
+                    }
+                    if (le.preferredHeight <= 0 && childRect.rect.height > 0)
+                    {
+                        le.preferredHeight = childRect.rect.height;
+                        le.minHeight = childRect.rect.height;
+                    }
+                }
+            }
         }
 
         private static string AddUiControl(ControlRequest request)
@@ -755,6 +945,7 @@ namespace PenpotUnityUiMcp
                 Transform target = string.IsNullOrWhiteSpace(request.targetPath) ? root.transform : root.transform.Find(request.targetPath);
                 if (target == null) return Error("targetPath was not found in the prefab.");
                 var message = operation(target);
+                CleanMissingScripts(root);
                 PrefabUtility.SaveAsPrefabAsset(root, request.prefabPath);
                 AssetDatabase.SaveAssets();
                 return JsonUtility.ToJson(new Response { status = "ok", message = message });
@@ -847,6 +1038,38 @@ namespace PenpotUnityUiMcp
             return JsonUtility.ToJson(new Response { status = "ok", message = "Asset copied and imported." });
         }
 
+        private static string CopyUiAssets(AssetBatchCopyRequest request)
+        {
+            if (request == null || request.assets == null || request.assets.Length == 0) return Error("At least one asset is required.");
+            foreach (var asset in request.assets)
+            {
+                if (asset == null || string.IsNullOrWhiteSpace(asset.sourceFilePath) || string.IsNullOrWhiteSpace(asset.destinationAssetPath)) return Error("Every asset requires sourceFilePath and destinationAssetPath.");
+                var destination = asset.destinationAssetPath.Replace('\\', '/');
+                if (!File.Exists(asset.sourceFilePath)) return Error("Source asset was not found: " + asset.sourceFilePath);
+                if (!destination.StartsWith("Assets/PenpotUI/")) return Error("destinationAssetPath must be below Assets/PenpotUI/.");
+                var extension = Path.GetExtension(destination).ToLowerInvariant();
+                if (extension != ".png" && extension != ".svg" && extension != ".ttf" && extension != ".otf") return Error("Only PNG, SVG, TTF, and OTF assets are supported.");
+                var fullPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, destination);
+                if (File.Exists(fullPath) && !asset.overwrite) return Error("Destination exists. Set overwrite to true to replace it: " + destination);
+                Directory.CreateDirectory(Path.GetDirectoryName(fullPath));
+                File.Copy(asset.sourceFilePath, fullPath, true);
+            }
+            AssetDatabase.Refresh();
+            foreach (var asset in request.assets)
+            {
+                var destination = asset.destinationAssetPath.Replace('\\', '/');
+                var extension = Path.GetExtension(destination).ToLowerInvariant();
+                if (!asset.importAsSprite || (extension != ".png" && extension != ".svg")) continue;
+                var importer = AssetImporter.GetAtPath(destination) as TextureImporter;
+                if (importer == null) return Error("Texture importer was not found: " + destination);
+                importer.textureType = TextureImporterType.Sprite;
+                importer.spriteImportMode = SpriteImportMode.Single;
+                importer.spritePixelsPerUnit = Mathf.Max(1, asset.pixelsPerUnit);
+                importer.SaveAndReimport();
+            }
+            return JsonUtility.ToJson(new Response { status = "ok", message = request.assets.Length + " assets copied and imported." });
+        }
+
         private static string WriteUiFile(FileWriteRequest request)
         {
             if (request == null || string.IsNullOrWhiteSpace(request.assetPath)) return Error("assetPath is required.");
@@ -868,6 +1091,22 @@ namespace PenpotUnityUiMcp
             if (!request.assetPath.Replace('\\', '/').StartsWith(allowedPrefix, StringComparison.Ordinal) || !request.assetPath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return Error("Only .cs scripts below Assets/PenpotUI/Editor/ may run.");
             var script = AssetDatabase.LoadAssetAtPath<MonoScript>(request.assetPath);
             var type = script == null ? null : script.GetClass();
+            if (type == null)
+            {
+                string className = Path.GetFileNameWithoutExtension(request.assetPath);
+                foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        foreach (var t in assembly.GetTypes())
+                        {
+                            if (t.Name == className) { type = t; break; }
+                        }
+                    }
+                    catch { }
+                    if (type != null) break;
+                }
+            }
             var method = type?.GetMethod(request.methodName ?? "Run", BindingFlags.Public | BindingFlags.Static, null, Type.EmptyTypes, null);
             if (method == null) return Error("A public static parameterless method was not found. Unity may still be compiling the script.");
             method.Invoke(null, null);

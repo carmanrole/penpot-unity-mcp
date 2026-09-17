@@ -1,6 +1,6 @@
 {
   "name": "com.imhooya.penpot-unity-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "ImHooya's Penpot Unity UI MCP",
   "description": "Local Unity Editor bridge for the Penpot Unity UI MCP server.",
   "license": "MIT",

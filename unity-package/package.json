@@ -6,7 +6,6 @@
   "license": "MIT",
   "unity": "6000.0",
   "dependencies": {
-    "com.unity.textmeshpro": "3.0.6",
     "com.unity.ugui": "2.0.0"
   },
   "keywords": [

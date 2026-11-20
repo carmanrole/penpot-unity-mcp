@@ -14,7 +14,7 @@ Generate production-ready Unity uGUI prefabs directly from Penpot layouts throug
 ### Key Features
 
 - **Direct MCP Sync (`penpot_sync_selected_layout`)**: Synchronizes the active Penpot selection directly into a Unity Prefab without downloading JSON or copying files manually.
-- **Native uGUI Hierarchy**: Builds genuine Unity UI elements (`RectTransform`, `TextMeshProUGUI`, `Image`, `Button`, `RectMask2D`).
+- **Native uGUI Hierarchy**: Builds genuine Unity UI elements (`RectTransform`, `UnityEngine.UI.Text`, `Image`, `Button`, `RectMask2D`).
 - **9-Slice (Sliced Sprite) Support**: Detects `borderRadius` from Penpot shapes, configures `TextureImporter.spriteBorder` in Unity, and sets `Image.Type.Sliced` to keep rounded corners crisp and undistorted at any aspect ratio.
 - **AutoLayout & LayoutElement Integration**: Maps Penpot flex layouts (`row`, `column`, `gap`, `padding`, alignment) to `HorizontalLayoutGroup` and `VerticalLayoutGroup`, automatically configuring `LayoutElement` (`preferredWidth`, `preferredHeight`) on child items to prevent coordinate and scaling conflicts.
 - **Selective Raster Fallback**: Exports PNG assets only for complex visual layers (gradients, strokes, SVGs, or custom shapes) while hiding nested children to keep container backgrounds pure.
@@ -105,3 +105,16 @@ Ensure your Penpot workspace is connected via the official Penpot MCP server. `p
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
+
+### Text and sizing on import
+
+The selected layout supplies the prefab root size. Each child uses its immediate
+parent's coordinates and constraints. Scale follows the parent's proportions,
+while two-edge constraints keep their margins in pixels.
+
+Native text imports as editable UnityEngine.UI.Text. For PSD lettering already
+converted into pixels, save a UTF-8 JSON file alongside the prefab, for example
+Card.prefab.penpot.json. Set fontAssetPath to a Unity .ttf or .otf path and
+textOverrides to an object keyed by Penpot layer ID. Each entry accepts value,
+fontSize, color, align and verticalAlign. Sync reads these settings again on
+reimport. Explicit tool arguments take precedence.

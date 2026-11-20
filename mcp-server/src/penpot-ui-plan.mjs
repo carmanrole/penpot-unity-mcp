@@ -21,22 +21,24 @@ function inferKind(shape) {
 function normalizeText(content) {
   if (typeof content === "string") return { value: content };
   if (!content || typeof content !== "object") return undefined;
-  return { value: content.text ?? content.characters ?? "", fontSize: content.fontSize, fontFamily: content.fontFamily, fontWeight: content.fontWeight, alignment: content.align };
+  return { value: content.text ?? content.characters ?? "", fontSize: content.fontSize, fontFamily: content.fontFamily, fontWeight: content.fontWeight, alignment: content.align, verticalAlign: content.verticalAlign };
 }
 
 function normalizedConstraint(value) { return String(value ?? "").toLowerCase().replace(/[^a-z]/g, ""); }
 
 function horizontalRect(mode, left, right, width, frameWidth) {
+  if (mode === "scale" && frameWidth > 0) return { min: left / frameWidth, max: (left + width) / frameWidth, pivot: .5, position: 0, size: 0 };
   if (["left", "start"].includes(mode)) return { min: 0, max: 0, pivot: 0, position: left, size: width };
   if (["right", "end"].includes(mode)) return { min: 1, max: 1, pivot: 1, position: -right, size: width };
-  if (["leftright", "both", "stretch", "scale"].includes(mode)) return { min: 0, max: 1, pivot: .5, position: (left - right) / 2, size: -(left + right) };
+  if (["leftright", "both", "stretch"].includes(mode)) return { min: 0, max: 1, pivot: .5, position: (left - right) / 2, size: -(left + right) };
   return { min: .5, max: .5, pivot: .5, position: left + width / 2 - frameWidth / 2, size: width };
 }
 
 function verticalRect(mode, top, bottom, height, frameHeight) {
+  if (mode === "scale" && frameHeight > 0) return { min: bottom / frameHeight, max: (bottom + height) / frameHeight, pivot: .5, position: 0, size: 0 };
   if (["top", "start"].includes(mode)) return { min: 1, max: 1, pivot: 1, position: -top, size: height };
   if (["bottom", "end"].includes(mode)) return { min: 0, max: 0, pivot: 0, position: bottom, size: height };
-  if (["topbottom", "both", "stretch", "scale"].includes(mode)) return { min: 0, max: 1, pivot: .5, position: (bottom - top) / 2, size: -(top + bottom) };
+  if (["topbottom", "both", "stretch"].includes(mode)) return { min: 0, max: 1, pivot: .5, position: (bottom - top) / 2, size: -(top + bottom) };
   return { min: .5, max: .5, pivot: .5, position: frameHeight / 2 - top - height / 2, size: height };
 }
 
@@ -48,12 +50,12 @@ function toRect(shape, parent, frame) {
   const frameY = asNumber(frame?.y);
   const parentX = isDirectChild ? frameX : asNumber(parent?.x, frameX);
   const parentY = isDirectChild ? frameY : asNumber(parent?.y, frameY);
-  const localX = asNumber(shape.x) - parentX;
-  const localY = asNumber(shape.y) - parentY;
+  const localX = asNumber(shape.parentX, asNumber(shape.x) - parentX);
+  const localY = asNumber(shape.parentY, asNumber(shape.y) - parentY);
   const width = asNumber(shape.width);
   const height = asNumber(shape.height);
-  const horizontal = horizontalRect(normalizedConstraint(shape.constraints?.horizontal), localX, parentWidth - localX - width, width, parentWidth);
-  const vertical = verticalRect(normalizedConstraint(shape.constraints?.vertical), localY, parentHeight - localY - height, height, parentHeight);
+  const horizontal = horizontalRect(normalizedConstraint(shape.constraints?.horizontal ?? (parent?.type === "group" ? "scale" : "left")), localX, parentWidth - localX - width, width, parentWidth);
+  const vertical = verticalRect(normalizedConstraint(shape.constraints?.vertical ?? (parent?.type === "group" ? "scale" : "top")), localY, parentHeight - localY - height, height, parentHeight);
   return {
     anchorMin: { x: horizontal.min, y: vertical.min }, anchorMax: { x: horizontal.max, y: vertical.max }, pivot: { x: horizontal.pivot, y: vertical.pivot },
     anchoredPosition: { x: horizontal.position, y: vertical.position }, sizeDelta: { x: horizontal.size, y: vertical.size }
@@ -66,6 +68,7 @@ function makeNode(shape, parent, frame, includedIds) {
   const text = normalizeText(shape.content) || (shape.characters ? { value: String(shape.characters) } : undefined);
   if (text) node.text = text;
   if (shape.borderRadius > 0) node.borderRadius = shape.borderRadius;
+  if (shape.hidden) node.hidden = true;
   if (shape.layout) node.layout = shape.layout;
   if (shape.constraints) node.constraints = shape.constraints;
   if (shape.component) node.component = shape.component;
@@ -91,7 +94,7 @@ export function buildUiPlan(exportData, pageId, frameId, prefabPath) {
     if (!shape.flattenedPngGroup) (shape.childIds ?? []).forEach((childId) => visit(byId.get(childId)));
   };
   visit(frame);
-  const nodes = page.shapes.filter((shape) => shape.id !== frame.id && includedIds.has(shape.id) && !shape.skipNative).map((shape) => {
+  const nodes = Array.from(includedIds, id => byId.get(id)).filter((shape) => shape.id !== frame.id && includedIds.has(shape.id) && !shape.skipNative).map((shape) => {
     const parentShape = byId.get(shape.parentId) || frame;
     return makeNode(shape, parentShape, frame, includedIds);
   });
@@ -109,5 +112,5 @@ export function buildUiPlan(exportData, pageId, frameId, prefabPath) {
       asset: frame.fallbackAssetFileName ? { fileName: frame.fallbackAssetFileName, imageType: "simple" } : undefined
     });
   }
-  return { schemaVersion: 2, source: { fileId: exportData.file.id, pageId: page.id, frameId: frame.id, frameName: frame.name }, target: { prefabPath, referenceResolution: { width: asNumber(frame.width), height: asNumber(frame.height) }, coordinateSystem: "penpot-top-left-to-unity-responsive" }, nodes };
+  return { schemaVersion: 2, source: { fileId: exportData.file.id, pageId: page.id, frameId: frame.id, frameName: frame.name }, target: { prefabPath, clipChildren: Boolean(frame.clipContent || frame.isMask), referenceResolution: { width: asNumber(frame.width), height: asNumber(frame.height) }, coordinateSystem: "penpot-top-left-to-unity-responsive" }, nodes };
 }

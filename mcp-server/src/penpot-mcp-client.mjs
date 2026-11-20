@@ -21,7 +21,7 @@ export class PenpotMcpClient {
     if (!notification) message.id = this.nextId++;
     let response;
     try { response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(message) }); }
-    catch (error) { throw new Error(`Penpot MCP is unreachable at ${endpoint}. Start the Penpot MCP server and connect its Penpot plugin. (${error.message})`); }
+    catch (error) { throw new Error(`Penpot MCP is unreachable. Start the Penpot MCP server and connect its Penpot plugin. (${error.message})`); }
     if (notification) return;
     const body = parseResponse(await response.text());
     if (!response.ok || body.error) throw new Error(body.error?.message ?? `Penpot MCP request failed (${response.status}).`);
@@ -32,7 +32,7 @@ export class PenpotMcpClient {
     const initialized = await this.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "penpot-unity-ui-mcp", version: "1.0.0" } });
     // Streamable HTTP implementations return this header on initialization.
     // Read it from a dedicated initialization request if a server requires it.
-    if (!initialized.result || !initialized.sessionId) throw new Error("Penpot MCP did not return a Streamable HTTP session ID.");
+    if (!initialized.result?.protocolVersion) throw new Error("Invalid Penpot MCP initialize response.");
     this.sessionId = initialized.sessionId;
     await this.request("notifications/initialized", {}, true);
   }

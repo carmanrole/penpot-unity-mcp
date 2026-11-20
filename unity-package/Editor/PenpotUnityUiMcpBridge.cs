@@ -22,8 +22,14 @@ namespace PenpotUnityUiMcp
     /// </summary>
     public sealed class PenpotUnityUiMcpBridge : EditorWindow
     {
-        private const int Port = 8091;
-        private const string Address = "http://127.0.0.1:8091/";
+        private static readonly string Address = GetBridgeAddress();
+
+        private static string GetBridgeAddress()
+        {
+            var setting = Environment.GetEnvironmentVariable("PENPOT_UNITY_UI_PORT");
+            int port = int.TryParse(setting, out var value) && value > 0 && value <= 65535 ? value : 8091;
+            return $"http://127.0.0.1:{port}/";
+        }
         private const int RequestTimeoutMs = 10000;
         private static readonly object ListenerLock = new object();
         private static readonly ConcurrentQueue<EditorRequest> EditorRequests = new ConcurrentQueue<EditorRequest>();
@@ -52,11 +58,14 @@ namespace PenpotUnityUiMcp
         [Serializable] private class UiObject { public string name; public string path; public int instanceId; public string[] components; }
         [Serializable] private class CreatePrefabRequest { public string prefabPath; public string rootName; public float width = 1920f; public float height = 1080f; }
         [Serializable] private class CreatePrefabResponse { public string status; public string message; public string prefabPath; }
-        [Serializable] private class PlanRequest { public string prefabPath; public UiAction[] actions; }
+        [Serializable] private class PlanRequest { public string prefabPath; public UiAction[] actions; public float rootWidth; public float rootHeight; public bool rootClip; public string fontAssetPath; }
         [Serializable] private class UiAction
         {
             public string operation;
             public string parentPath;
+            public string parentSourceId;
+            public string textAlignment;
+            public bool bold;
             public string name;
             public string elementType;
             public float x;
@@ -66,6 +75,7 @@ namespace PenpotUnityUiMcp
             public string color = "#FFFFFFFF";
             public string text;
             public float fontSize = 24f;
+            public bool hidden;
             public bool useResponsiveRect;
             public float anchorMinX; public float anchorMinY; public float anchorMaxX = 1f; public float anchorMaxY = 1f;
             public float pivotX = .5f; public float pivotY = .5f;
@@ -259,6 +269,7 @@ namespace PenpotUnityUiMcp
                 case "/ui/ensure-scene-ui": return EnsureSceneUi();
                 case "/ui/prefab-hierarchy": return GetPrefabHierarchy(JsonUtility.FromJson<PrefabTargetRequest>(body));
                 case "/ui/create-prefab": return CreatePrefab(JsonUtility.FromJson<CreatePrefabRequest>(body));
+                case "/ui/import-settings": return ImportSettings(JsonUtility.FromJson<PrefabTargetRequest>(body));
                 case "/ui/apply-plan": return ApplyPlan(JsonUtility.FromJson<PlanRequest>(body));
                 case "/ui/delete-element": return DeleteElement(JsonUtility.FromJson<PrefabTargetRequest>(body));
                 case "/ui/set-rect-transform": return SetRectTransform(JsonUtility.FromJson<RectTransformRequest>(body));
@@ -493,20 +504,49 @@ namespace PenpotUnityUiMcp
             return JsonUtility.ToJson(new CompilationStatusResponse { status = "ok", isCompiling = EditorApplication.isCompiling, isUpdating = EditorApplication.isUpdating, errors = errors.ToArray() });
         }
 
+        private static string ImportSettings(PrefabTargetRequest request)
+        {
+            var path = request?.prefabPath;
+            if (string.IsNullOrEmpty(path) || !path.StartsWith("Assets/", StringComparison.Ordinal)
+                || !path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase) || path.Contains(".."))
+                return Error("Expected an Assets-relative prefab path.");
+            var settings = AssetDatabase.LoadAssetAtPath<TextAsset>(path + ".penpot.json");
+            return settings == null ? "{}" : settings.text;
+        }
+
         private static string ApplyPlan(PlanRequest request)
         {
-            if (request == null || string.IsNullOrWhiteSpace(request.prefabPath) || request.actions == null || request.actions.Length == 0) return Error("prefabPath and at least one action are required.");
+            if (request == null || string.IsNullOrWhiteSpace(request.prefabPath) || request.actions == null || (request.actions.Length == 0 && request.rootWidth <= 0)) return Error("prefabPath and at least one action are required.");
             var root = PrefabUtility.LoadPrefabContents(request.prefabPath);
             if (root == null) return Error("Prefab was not found.");
             int applied = 0;
             try
             {
+                if (request.rootWidth > 0 && request.rootHeight > 0)
+                {
+                    ApplyMask(root, new UiAction { addRectMask = request.rootClip });
+                    var rootRect = root.GetComponent<RectTransform>();
+                    rootRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, request.rootWidth);
+                    rootRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, request.rootHeight);
+                }
+                Font font = null;
+                if (!string.IsNullOrEmpty(request.fontAssetPath))
+                {
+                    font = AssetDatabase.LoadAssetAtPath<Font>(request.fontAssetPath);
+                    if (font == null) throw new InvalidOperationException("UGUI font not found: " + request.fontAssetPath);
+                }
                 foreach (var action in request.actions)
                 {
                     if (action == null || (!string.Equals(action.operation, "create", StringComparison.OrdinalIgnoreCase) && !string.Equals(action.operation, "upsert", StringComparison.OrdinalIgnoreCase))) throw new InvalidOperationException("Only the 'create' and 'upsert' operations are supported.");
                     var existing = string.Equals(action.operation, "upsert", StringComparison.OrdinalIgnoreCase) ? FindBySourceId(root.transform, action.sourceId) : null;
-                    if (existing == null) CreateUiElement(root.transform, action);
-                    else UpdateUiElement(existing, action);
+                    var parent = ResolveParent(root.transform, action);
+                    if (existing == null) CreateUiElement(parent, action, font);
+                    else
+                    {
+                        if (existing.parent != parent) existing.SetParent(parent, false);
+                        if (request.rootWidth > 0) existing.SetAsLastSibling();
+                        UpdateUiElement(existing, action, font);
+                    }
                     applied++;
                 }
                 CleanMissingScripts(root);
@@ -527,10 +567,17 @@ namespace PenpotUnityUiMcp
             }
         }
 
-        private static void CreateUiElement(Transform prefabRoot, UiAction action)
+        private static Transform ResolveParent(Transform prefabRoot, UiAction action)
         {
+            if (!string.IsNullOrEmpty(action.parentSourceId))
+                return FindBySourceId(prefabRoot, action.parentSourceId) ?? throw new InvalidOperationException("Parent layer not found: " + action.parentSourceId);
             Transform parent = string.IsNullOrWhiteSpace(action.parentPath) ? prefabRoot : prefabRoot.Find(action.parentPath);
             if (parent == null) throw new InvalidOperationException("Parent path was not found: " + action.parentPath);
+            return parent;
+        }
+
+        private static void CreateUiElement(Transform parent, UiAction action, Font font)
+        {
             string type = (action.elementType ?? "panel").ToLowerInvariant();
             var element = new GameObject(string.IsNullOrWhiteSpace(action.name) ? "Element" : action.name, typeof(RectTransform));
             element.transform.SetParent(parent, false);
@@ -546,10 +593,7 @@ namespace PenpotUnityUiMcp
 
             if (type == "text")
             {
-                var text = element.AddComponent<TextMeshProUGUI>();
-                text.text = action.text ?? string.Empty;
-                text.fontSize = Mathf.Max(1, action.fontSize);
-                text.color = color;
+                ApplyUguiText(element, action, font, color);
             }
             else if (!string.IsNullOrWhiteSpace(action.spriteAssetPath) || (type != "container" && (action.hasVisualFill || type == "button")))
             {
@@ -589,7 +633,23 @@ namespace PenpotUnityUiMcp
             return null;
         }
 
-        private static void UpdateUiElement(Transform element, UiAction action)
+        private static void ApplyUguiText(GameObject element, UiAction action, Font font, Color color)
+        {
+            var previous = element.GetComponent<Graphic>();
+            if (previous != null && !(previous is Text)) DestroyImmediate(previous);
+            var label = GetOrAddComponent<Text>(element);
+            label.font = font ?? label.font ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            label.text = action.text ?? string.Empty;
+            label.fontSize = Mathf.Max(1, Mathf.RoundToInt(action.fontSize));
+            label.fontStyle = action.bold ? FontStyle.Bold : FontStyle.Normal;
+            label.color = color;
+            label.raycastTarget = false;
+            label.supportRichText = false;
+            label.verticalOverflow = VerticalWrapMode.Overflow;
+            if (Enum.TryParse(action.textAlignment, true, out TextAnchor alignment)) label.alignment = alignment;
+        }
+
+        private static void UpdateUiElement(Transform element, UiAction action, Font font)
         {
             element.name = string.IsNullOrWhiteSpace(action.name) ? element.name : action.name;
             var rect = element as RectTransform;
@@ -599,9 +659,16 @@ namespace PenpotUnityUiMcp
             rect.anchoredPosition = new Vector2(action.x, action.y); rect.sizeDelta = action.useResponsiveRect ? new Vector2(action.width, action.height) : new Vector2(Mathf.Max(1, action.width), Mathf.Max(1, action.height));
             ApplyParentLayoutElement(element, element.parent, action);
             Color color; if (!ColorUtility.TryParseHtmlString(action.color, out color)) color = Color.white;
-            var text = element.GetComponent<TextMeshProUGUI>(); if (text != null) { text.text = action.text ?? text.text; text.fontSize = Mathf.Max(1, action.fontSize); text.color = color; }
+            bool isText = string.Equals(action.elementType, "text", StringComparison.OrdinalIgnoreCase);
+            if (isText) ApplyUguiText(element.gameObject, action, font, color);
+            else
+            {
+                var label = element.GetComponent<Text>();
+                if (label != null) DestroyImmediate(label);
+                var tmp = element.GetComponent<TextMeshProUGUI>();
+                if (tmp != null) DestroyImmediate(tmp);
+            }
             var image = element.GetComponent<Image>();
-            bool isText = string.Equals(action.elementType, "text", StringComparison.OrdinalIgnoreCase) || element.GetComponent<TextMeshProUGUI>() != null;
             bool hasSprite = !isText && !string.IsNullOrWhiteSpace(action.spriteAssetPath);
             bool shouldHaveImage = !isText && (hasSprite || (!string.Equals(action.elementType, "container", StringComparison.OrdinalIgnoreCase) && (action.hasVisualFill || string.Equals(action.elementType, "button", StringComparison.OrdinalIgnoreCase))));
 
@@ -701,6 +768,7 @@ namespace PenpotUnityUiMcp
 
         private static void ApplyMetadata(GameObject element, UiAction action)
         {
+            if (!string.IsNullOrWhiteSpace(action.sourceId)) element.SetActive(!action.hidden);
             if (string.IsNullOrWhiteSpace(action.sourceId) && string.IsNullOrWhiteSpace(action.accessibilityLabel) && string.IsNullOrWhiteSpace(action.accessibilityDescription)) return;
             var metadata = element.GetComponent<PenpotUnityUiMetadata>() ?? element.AddComponent<PenpotUnityUiMetadata>();
             metadata.Apply(action.sourceId, action.componentId, action.instanceId, action.accessibilityLabel, action.accessibilityDescription);
@@ -961,6 +1029,7 @@ namespace PenpotUnityUiMcp
                 case "Button": return typeof(Button);
                 case "Slider": return typeof(Slider);
                 case "ScrollRect": return typeof(ScrollRect);
+                case "Text": return typeof(Text);
                 case "TextMeshProUGUI": return typeof(TextMeshProUGUI);
                 case "CanvasGroup": return typeof(CanvasGroup);
                 case "LayoutElement": return typeof(LayoutElement);

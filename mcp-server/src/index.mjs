@@ -10,22 +10,6 @@ import { comparePngFiles } from "./png-visual-diff.mjs";
 import { PenpotMcpClient, imageContent, textContent } from "./penpot-mcp-client.mjs";
 
 const bridgeUrl = (process.env.PENPOT_UNITY_UI_BRIDGE_URL ?? "http://127.0.0.1:8091").replace(/\/$/, "");
-const capturedAssetCache = new Map();
-const penpotExportParallelism = Math.max(1, Math.min(8, Number.parseInt(process.env.PENPOT_MCP_EXPORT_PARALLELISM ?? "4", 10) || 4));
-
-async function mapWithConcurrency(items, concurrency, callback) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
-  async function worker() {
-    while (true) {
-      const index = nextIndex++;
-      if (index >= items.length) return;
-      results[index] = await callback(items[index]);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
-  return results;
-}
 
 const exportSelectedLayoutCode = `
 const requestedName = __LAYOUT_NAME__;
@@ -85,12 +69,24 @@ function visit(shape) {
       };
     }
   }
+  const fill = shape.fills?.[0];
+  const image = fill?.fillImage;
+  const plainPng = shape.type === "rectangle" && image?.mtype === "image/png"
+    && Math.abs(image.width - shape.width) < .001 && Math.abs(image.height - shape.height) < .001
+    && shape.fills.length === 1 && (fill.fillOpacity ?? 1) === 1 && (shape.opacity ?? 1) === 1
+    && !radius && !shape.strokes?.length && !shape.shadows?.length && !shape.blur
+    && !shape.flipX && !shape.flipY && !shape.rotation
+    && (!shape.blendMode || shape.blendMode === "normal");
   shapes.push({
+    rawPngId: plainPng ? image.id : undefined,
     id: String(shape.id),
     name: shape.name || "Unnamed",
     type: isTextShape ? "text" : (shape.type || "unknown"),
     parentId: shape.parent ? String(shape.parent.id) : undefined,
     childIds: children.map((child) => String(child.id)),
+    hidden: shape.hidden === true,
+    parentX: shape.parentX,
+    parentY: shape.parentY,
     x: shape.x,
     y: shape.y,
     width: shape.width,
@@ -99,7 +95,7 @@ function visit(shape) {
     borderRadius: radius,
     fills: shape.fills,
     strokes: shape.strokes,
-    content: isTextShape ? { characters: textChars || "", fontFamily: shape.fontFamily, fontSize: shape.fontSize || 14, fontWeight: shape.fontWeight, lineHeight: shape.lineHeight, align: shape.align } : shape.content,
+    content: isTextShape ? { characters: textChars || "", fontFamily: shape.fontFamily, fontSize: shape.fontSize || 14, fontWeight: shape.fontWeight, lineHeight: shape.lineHeight, align: shape.align, verticalAlign: shape.verticalAlign } : shape.content,
     layout: shape.layout,
     autoLayout: autoLayout || shape.autoLayout,
     constraints: { horizontal: shape.constraintsHorizontal || shape.constraints?.horizontal, vertical: shape.constraintsVertical || shape.constraints?.vertical },
@@ -204,7 +200,7 @@ const server = new McpServer({
 });
 
 
-async function captureSelectedLayout(destinationAssetDirectory = "Assets/PenpotUI/Imported", layoutName, importAssets = true) {
+async function captureSelectedLayout(destinationAssetDirectory = "Assets/PenpotUI/Imported", layoutName, importAssets = true, textOverrides = {}) {
   const penpot = new PenpotMcpClient();
   await penpot.connect();
   let snapshot;
@@ -279,37 +275,48 @@ async function captureSelectedLayout(destinationAssetDirectory = "Assets/PenpotU
     return contentBase64;
   }
 
-  // Export non-root shapes that require fallback graphics.
-  // Root layouts were already marked exportPng = false above.
-  const fallbackLeaves = snapshot.shapes.filter((shape) => shape.exportPng);
-  const candidatesBySignature = new Map();
-  for (const shape of fallbackLeaves) {
-    const signature = JSON.stringify({ type: shape.type, width: shape.width, height: shape.height, rotation: shape.rotation, fills: shape.fills, strokes: shape.strokes, content: shape.content });
-    const group = candidatesBySignature.get(signature) ?? [];
-    group.push(shape);
-    candidatesBySignature.set(signature, group);
+  const seenOverrides = new Set();
+  for (const shape of snapshot.shapes) {
+    const override = textOverrides[shape.id];
+    if (!override) continue;
+    if (shape.childIds?.length) throw new Error("Text overrides require a leaf layer: " + shape.name);
+    seenOverrides.add(shape.id);
+    shape.type = "text";
+    shape.content = { ...shape.content, ...override, characters: override.value, text: override.value };
+    shape.fills = [{ fillColor: override.color ?? "#FFFFFF" }];
+    shape.exportPng = false;
   }
-  const exported = await mapWithConcurrency(Array.from(candidatesBySignature.entries()), 1, async ([visualSignature, shapes]) => {
-    const shape = shapes[0];
+  for (const id of Object.keys(textOverrides)) {
+    if (!seenOverrides.has(id)) throw new Error("Text override not found in selection: " + id);
+  }
+  // Separate image fills can have the same name and dimensions. Source IDs also
+  // give repeated syncs a stable Unity asset path without caching stale pixels.
+  const assets = [];
+  const rawLayers = snapshot.shapes.filter(shape => shape.exportPng && shape.rawPngId);
+  const rawPngs = new Map();
+  for (let offset = 0; importAssets && offset < rawLayers.length; offset += 6) {
+    const ids = rawLayers.slice(offset, offset + 6).map(shape => shape.id);
+    const code = `
+      const page = penpot.currentFile.pages.find(p => p.id === ${JSON.stringify(snapshot.page.id)});
+      const result = [];
+      for (const id of ${JSON.stringify(ids)}) {
+        const image = page.getShapeById(id).fills[0].fillImage;
+        const bytes = await image.data();
+        if (typeof bytes.toBase64 !== "function") return [];
+        result.push([id, bytes.toBase64()]);
+      }
+      return result;`;
+    const response = JSON.parse(textContent(await penpot.callTool("execute_code", { code })));
+    for (const [id, png] of response.result ?? response) rawPngs.set(id, png);
+  }
+  for (const shape of snapshot.shapes.filter(shape => shape.exportPng)) {
     const safeName = String(shape.name ?? "asset").replace(/[^a-z0-9-_]+/gi, "_").replace(/^_+|_+$/g, "") || "asset";
-    const cached = capturedAssetCache.get(visualSignature);
-    if (cached) return { shapes, asset: { sourceIds: shapes.map((item) => item.id), fileName: cached.fileName, contentBase64: cached.contentBase64 } };
-    const fileName = `${safeName}_${String(shape.id).slice(0, 8)}.png`;
-    try {
-      const contentBase64 = await exportShapePng(penpot, shape);
-      capturedAssetCache.set(visualSignature, { fileName, contentBase64 });
-      return { shapes, asset: { sourceIds: shapes.map((item) => item.id), fileName, contentBase64 } };
-    } catch (error) {
-      throw new Error(`PNG export failed for Penpot shape '${shape.name}' (${shape.id}): ${error.message}`);
-    }
-  });
-  const assets = exported.map(({ shapes, asset }) => {
-    for (const shape of shapes) {
-      shape.fallbackAssetFileName = asset.fileName;
-      shape.fallbackReason = "complex-penpot-layer";
-    }
-    return asset;
-  });
+    const fileName = safeName + "_" + shape.id + ".png";
+    const contentBase64 = importAssets ? (rawPngs.get(shape.id) ?? await exportShapePng(penpot, shape)) : undefined;
+    shape.fallbackAssetFileName = fileName;
+    shape.fallbackReason = "complex-penpot-layer";
+    assets.push({ sourceIds: [shape.id], fileName, contentBase64 });
+  }
   for (const shape of snapshot.shapes) {
     // A complex parent without an exported leaf remains native instead of
     // forcing a second overlapping PNG export.
@@ -342,12 +349,12 @@ function mapChildAlignment(layoutType, align, justify) {
   const a = String(align || "start").toLowerCase();
   const j = String(justify || "start").toLowerCase();
   if (layoutType === "horizontal") {
-    const v = a.includes("center") ? "Middle" : a.includes("end") ? "Lower" : "Upper";
+    const v = a.includes("center") ? "Middle" : (a.includes("end") || a === "bottom") ? "Lower" : "Upper";
     const h = j.includes("center") ? "Center" : j.includes("end") ? "Right" : "Left";
     return `${v}${h}`;
   } else if (layoutType === "vertical") {
     const v = j.includes("center") ? "Middle" : j.includes("end") ? "Lower" : "Upper";
-    const h = a.includes("center") ? "Center" : a.includes("end") ? "Right" : "Left";
+    const h = a.includes("center") ? "Center" : (a.includes("end") || a === "bottom") ? "Right" : "Left";
     return `${v}${h}`;
   }
   return "UpperLeft";
@@ -369,15 +376,19 @@ function buildApplyPayload(data, frameId, prefabPath, destinationAssetDirectory)
   const actions = plan.nodes.map((node) => {
     const childAlignment = node.autoLayout ? mapChildAlignment(node.autoLayout.type, node.autoLayout.alignItems, node.autoLayout.justifyContent) : undefined;
     return {
-      operation: "upsert", parentPath: pathFor(node), name: safeName(node.name),
+      operation: "upsert",
+      parentSourceId: byId.has(node.parentSourceId) ? node.parentSourceId : undefined,
+      parentPath: pathFor(node), name: safeName(node.name),
       elementType: node.kind === "text" ? "text" : isButton(node) ? "button" : (node.kind === "image" || Boolean(node.asset?.fileName)) ? "image" : (node.kind === "container" || !node.style?.color) ? "container" : "panel",
       x: node.rect.anchoredPosition.x, y: node.rect.anchoredPosition.y,
       width: node.rect.sizeDelta.x, height: node.rect.sizeDelta.y,
       color: node.asset?.fileName ? "#FFFFFFFF" : (node.style?.color ?? "#FFFFFFFF"), text: node.text?.value, fontSize: Number(node.text?.fontSize) || undefined,
-      useResponsiveRect: true, anchorMinX: node.rect.anchorMin.x, anchorMinY: node.rect.anchorMin.y,
+      hidden: node.hidden === true, useResponsiveRect: true, anchorMinX: node.rect.anchorMin.x, anchorMinY: node.rect.anchorMin.y,
       anchorMaxX: node.rect.anchorMax.x, anchorMaxY: node.rect.anchorMax.y,
       pivotX: node.rect.pivot.x, pivotY: node.rect.pivot.y, sourceId: node.sourceId,
       accessibilityLabel: node.name,
+      textAlignment: node.kind === "text" ? mapChildAlignment("horizontal", node.text?.verticalAlign, node.text?.alignment === "right" ? "end" : node.text?.alignment) : undefined,
+      bold: Number(node.text?.fontWeight) >= 600 || /bold/i.test(node.text?.fontWeight ?? ""),
       layoutType: node.autoLayout?.type,
       layoutSpacing: node.autoLayout?.gap ?? 0,
       paddingLeft: node.autoLayout?.paddingLeft ?? 0,
@@ -397,6 +408,11 @@ function buildApplyPayload(data, frameId, prefabPath, destinationAssetDirectory)
   return { plan, actions };
 }
 
+const rasterTextOverrides = z.record(z.object({
+      value: z.string(), fontSize: z.number().positive(), color: z.string().optional(),
+      align: z.enum(["left", "center", "right"]).optional(), verticalAlign: z.enum(["top", "center", "bottom"]).optional()
+    }));
+
 server.tool(
   "penpot_sync_selected_layout",
   "One automatic Penpot-to-Unity workflow. Provide layoutName to find a named Penpot frame, board, or group anywhere in the current Penpot file; otherwise it syncs the current Penpot selection. It exports only required leaf PNG assets, imports them in one Unity Editor request, then creates or updates all native UI, Buttons, colors, masks, layouts, and Sprite references in one Prefab apply request.",
@@ -404,25 +420,37 @@ server.tool(
     prefabPath: z.string().regex(/^Assets\/.+\.prefab$/, "Must be a prefab path below Assets/"),
     layoutName: z.string().min(1).optional().describe("Exact Penpot frame, board, or group name anywhere in the current file. Omit only to use the current selection."),
     destinationAssetDirectory: z.string().regex(/^Assets\/PenpotUI\/.+/).optional(),
+    fontAssetPath: z.string().optional().describe("Project .ttf or .otf Font for imported UnityEngine.UI.Text."),
+    textOverrides: rasterTextOverrides.optional().describe("Editable text for rasterized PSD leaf layers, keyed by Penpot shape ID."),
     createIfMissing: z.boolean().optional(),
     dryRun: z.boolean().optional().describe("Read Penpot and build the full Unity plan without importing assets or modifying Unity.")
   },
-  async ({ prefabPath, layoutName, destinationAssetDirectory = "Assets/PenpotUI/Imported", createIfMissing = true, dryRun = false }) => {
-    const captured = await captureSelectedLayout(destinationAssetDirectory, layoutName, !dryRun);
+  async ({ prefabPath, layoutName, destinationAssetDirectory = "Assets/PenpotUI/Imported", createIfMissing = true, dryRun = false, fontAssetPath, textOverrides }) => {
+    let settings = {};
+    try {
+      settings = await bridgeRequest("/ui/import-settings", { method: "POST", body: JSON.stringify({ prefabPath }) });
+    } catch (error) {
+      if (!dryRun || !error.message.includes("bridge is unreachable")) throw error;
+    }
+    const overrides = { ...rasterTextOverrides.parse(settings.textOverrides ?? {}), ...textOverrides };
+    fontAssetPath ??= settings.fontAssetPath;
+    const captured = await captureSelectedLayout(destinationAssetDirectory, layoutName, !dryRun, overrides);
     const page = captured.data.pages[0];
     const frameId = page.shapes[0]?.id;
     if (!frameId) throw new Error("The selected Penpot layout did not contain a root frame.");
     const { plan, actions } = buildApplyPayload(captured.data, frameId, prefabPath, destinationAssetDirectory);
+    const { width, height } = plan.target.referenceResolution;
+    if (!(width > 0 && height > 0)) throw new Error("Selected layout has no positive dimensions.");
     if (dryRun) return jsonResult({ status: "dry-run", resolvedLayout: { id: frameId, name: plan.source.frameName, page: page.name }, nodeCount: actions.length, pngAssetCount: captured.assets.length, imageCount: actions.filter((action) => action.spriteAssetPath).length, buttonCount: actions.filter((action) => action.elementType === "button").length, containerCount: actions.filter((action) => action.elementType === "container").length });
     if (createIfMissing) {
       const rootName = String(page.shapes.find((shape) => shape.id === frameId)?.name ?? "PenpotUi").replace(/\s*\/\s*/g, " - ").replace(/[:\\]/g, " ").trim();
-      try { await bridgeRequest("/ui/create-prefab", { method: "POST", body: JSON.stringify({ prefabPath, rootName }) }); }
+      try { await bridgeRequest("/ui/create-prefab", { method: "POST", body: JSON.stringify({ prefabPath, rootName, width, height }) }); }
       catch (error) {
         const message = String(error.message);
         if (!message.includes("already exists") && !message.includes("Refusing to overwrite")) throw error;
       }
     }
-    const applied = await bridgeRequest("/ui/apply-plan", { method: "POST", body: JSON.stringify({ prefabPath, actions }) });
+    const applied = await bridgeRequest("/ui/apply-plan", { method: "POST", body: JSON.stringify({ prefabPath, actions, rootWidth: width, rootHeight: height, rootClip: plan.target.clipChildren, fontAssetPath }) });
     return jsonResult({ status: "ok", prefabPath, importedCount: captured.importResult.importedCount, appliedCount: applied.applied, nodeCount: actions.length });
   }
 );
@@ -482,9 +510,10 @@ server.tool(
 
 server.tool(
   "unity_ui_apply_plan",
-  "Apply a restricted UI plan to an existing prefab. Each action currently creates a panel, image, button, or TMP text element.",
+  "Apply a restricted UI plan to an existing prefab. Each action currently creates a panel, image, button, or UnityEngine.UI.Text element.",
   {
     prefabPath: z.string(),
+    fontAssetPath: z.string().optional(),
     actions: z.array(z.object({
       operation: z.enum(["create", "upsert"]),
       parentPath: z.string().optional().describe("Path relative to the prefab root; omit for the root."),
@@ -501,6 +530,7 @@ server.tool(
       anchorMinX: z.number().min(0).max(1).optional(), anchorMinY: z.number().min(0).max(1).optional(),
       anchorMaxX: z.number().min(0).max(1).optional(), anchorMaxY: z.number().min(0).max(1).optional(),
       pivotX: z.number().min(0).max(1).optional(), pivotY: z.number().min(0).max(1).optional(),
+      parentSourceId: z.string().optional(), textAlignment: z.string().optional(), bold: z.boolean().optional(),
       sourceId: z.string().optional(), componentId: z.string().optional(), instanceId: z.string().optional(),
       accessibilityLabel: z.string().optional(), accessibilityDescription: z.string().optional(),
       layoutType: z.enum(["horizontal", "vertical", "grid"]).optional(), layoutSpacing: z.number().optional(),
